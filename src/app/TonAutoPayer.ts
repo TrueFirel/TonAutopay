@@ -1,15 +1,18 @@
-import TonWeb from 'tonweb';
+import TonWeb from "tonweb";
 import { BN as BNType } from 'bn.js';
+global.Buffer = require('buffer').Buffer;
 
 import Payment from './Payment';
 import Client from './Client';
-import payment from "./Payment";
+import { configureTonWeb } from './config/tonWeb';
 
 const { BN } = TonWeb.utils;
 
 export interface AutoPayerConfig {
     appMnemonic: string[];
     userMnemonic: string[];
+    providerUrl: string;
+    apiKey: string;
 }
 
 class TonAutoPayer {
@@ -21,6 +24,8 @@ class TonAutoPayer {
 
     constructor(options: AutoPayerConfig) {
         this.options = options;
+
+        configureTonWeb(this.options);
     }
 
     async initPayment(userBalance: BNType = new BN(0), appBalance: BNType = new BN(0)) {
@@ -31,7 +36,15 @@ class TonAutoPayer {
 
         await Promise.all([this.appClient.init(), this.userClient.init()]);
 
-        return this.payment = new Payment(this.appClient, appBalance, this.userClient, userBalance);
+        const payment = new Payment(this.appClient, appBalance, this.userClient, userBalance);
+        await new Promise((resolve) => {
+            setTimeout(() => resolve(null), 2000)
+        })
+
+        this.payment = payment
+        await payment.deploy();
+
+        return this.payment;
     }
 }
 

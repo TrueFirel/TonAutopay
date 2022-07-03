@@ -1,4 +1,3 @@
-import TonWeb from 'tonweb';
 import { KeyPair, mnemonicToKeyPair } from 'tonweb-mnemonic';
 
 import Wallet from './Wallet';

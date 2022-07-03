@@ -36,7 +36,7 @@ interface ChannelConfig extends InitialChannelConfig {
 }
 
 //should be replaced with storing and incrementing on the server side to avoid channel collision
-const CHANNEL_ID = 112;
+const CHANNEL_ID = ~~(Date.now() / 1000);
 
 class Payment {
     private appClient: Client;
@@ -50,10 +50,10 @@ class Payment {
         this.appClient = appClient;
         this.userClient = userClient;
         this.state = {
-            balanceA: toNano('1'),
-            balanceB: toNano('2'),
-            seqnoA: new BN(0),
-            seqnoB: new BN(0),
+            balanceA: userBalance,
+            balanceB: appBalance,
+            seqnoA: new BN(1),
+            seqnoB: new BN(1),
         }
 
         this.config = {
@@ -67,7 +67,7 @@ class Payment {
         this.setup();
     }
 
-    private setup() {
+    private async setup() {
         this.userChannelController = new ChannelController(
             this.userClient.getWallet(),
             this.userClient.getKeyPair().secretKey, {
@@ -92,6 +92,17 @@ class Payment {
     public async deploy(userTransactionFee: BNType = toNano(DEFAULT_TRANSACTION_FEE)) {
         await this.validateChannels();
         await this.userChannelController.getMessageStream().deploy(userTransactionFee);
+        let channelState = -1;
+        while (channelState !== 0) {
+            try {
+                channelState = await this.userChannelController.getChannel().getChannelState();
+            } catch (e) {
+
+            }
+            await new Promise((resolve) => {
+                setTimeout(() => resolve(null), 2000)
+            })
+        }
         await this.topUp(userTransactionFee);
     }
 
@@ -107,18 +118,43 @@ class Payment {
     private async topUp(userTransactionFee: BNType) {
         const userMessageSender = this.userChannelController.getMessageStream().getMessageSender();
         const appMessageSender = this.appChannelController.getMessageStream().getMessageSender();
+        const userChannel = this.userChannelController.getChannel();
 
-        await userMessageSender
-            .topUp({ coinsA: this.state.balanceA, coinsB: new BN(0) })
-            .send(this.state.balanceA.add(userTransactionFee));
+        const intialBalanceA = (await userChannel.getData()).balanceA.toString()
+        const intialBalanceB = (await userChannel.getData()).balanceB.toString()
 
-        await appMessageSender
-            .topUp({ coinsA: new BN(0), coinsB: this.state.balanceB })
-            .send(this.state.balanceB.add(userTransactionFee));
+        await Promise.all([
+            userMessageSender
+                .topUp({ coinsA: this.state.balanceA, coinsB: new BN(0) })
+                .send(this.state.balanceA.add(userTransactionFee)),
+            appMessageSender
+                .topUp({ coinsA: new BN(0), coinsB: this.state.balanceB })
+                .send(this.state.balanceB.add(userTransactionFee))
+        ])
 
+        let balanceA = intialBalanceA;
+        let balanceB = intialBalanceB;
+
+        while (balanceA === intialBalanceA || balanceB === intialBalanceB) {
+            balanceA = (await userChannel.getData()).balanceA.toString();
+            balanceB = (await userChannel.getData()).balanceB.toString();
+            await new Promise((resolve) => {
+                setTimeout(() => resolve(null), 2000)
+            })
+        }
+
+        const initialChannelState = await userChannel.getChannelState()
         await userMessageSender
             .init(this.state)
             .send(userTransactionFee);
+
+        let channelState = initialChannelState
+        while (channelState === initialChannelState) {
+            channelState = await userChannel.getChannelState();
+            await new Promise((resolve) => {
+                setTimeout(() => resolve(null), 2000)
+            })
+        }
     }
 
     public async pay(amount: BNType) {
@@ -144,16 +180,17 @@ class Payment {
     public async terminate(userTransactionFee: BNType = toNano('0.05')) {
         const userChannel = this.userChannelController.getChannel();
         const appChannel = this.appChannelController.getChannel();
-        const userMessageSender = this.appChannelController.getMessageStream().getMessageSender()
+        const userMessageSender = this.userChannelController.getMessageStream().getMessageSender()
 
         const appCloseSignature = await appChannel.signClose(this.state);
 
-        if (!(await userChannel.verifyClose(this.state, appCloseSignature))) {
+        const verify = await userChannel.verifyClose(this.state, appCloseSignature);
+        if (!verify) {
             throw new Error('Invalid user signature');
         }
-
         await userMessageSender.close({
             ...this.state,
+
             hisSignature: appCloseSignature
         }).send(userTransactionFee);
     }
